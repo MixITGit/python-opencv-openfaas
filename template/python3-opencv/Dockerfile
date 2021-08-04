@@ -1,56 +1,56 @@
-FROM openfaas/of-watchdog:0.7.7 as watchdog
+FROM --platform=${TARGETPLATFORM:-linux/amd64} ghcr.io/openfaas/classic-watchdog:0.1.5 as watchdog
 FROM mixitd/python-face-recognition
+
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+# Allows you to add additional packages via build-arg
+ARG ADDITIONAL_PACKAGE
 
 COPY --from=watchdog /fwatchdog /usr/bin/fwatchdog
 RUN chmod +x /usr/bin/fwatchdog
+RUN apt-get -qy install ca-certificates
 
-ARG ADDITIONAL_PACKAGE
-# Alternatively use ADD https:// (which will not be cached by Docker builder)
-
-RUN apt-get -qy update && apt-get -qy install gcc make  ca-certificates libsm6 libxext6 libgl1-mesa-glx libglib2.0-0 ${ADDITIONAL_PACKAGE}
 
 # Add non root user
 RUN addgroup --system app && adduser app --system --ingroup app
-RUN chown app /home/app
-
-USER app
-
-ENV PATH=$PATH:/home/app/.local/bin
 
 WORKDIR /home/app/
 
 COPY index.py           .
 COPY requirements.txt   .
 
-USER root
-RUN pip install -r requirements.txt
-
-#build function directory and install user specified componenets.
+RUN chown -R app /home/app && \
+  mkdir -p /home/app/python && chown -R app /home/app
 USER app
+ENV PATH=$PATH:/home/app/.local/bin:/home/app/python/bin/
+ENV PYTHONPATH=$PYTHONPATH:/home/app/python
+
+RUN pip install -r requirements.txt --target=/home/app/python
 
 RUN mkdir -p function
 RUN touch ./function/__init__.py
+
 WORKDIR /home/app/function/
 COPY function/requirements.txt	.
-RUN pip install --user -r requirements.txt
+
+RUN pip install -r requirements.txt --target=/home/app/python
 
 WORKDIR /home/app/
 
-#install function code
 USER root
 
-COPY function   function
-RUN chown -R app:app ./
+COPY function           function
 
-#configure WSGI server and healthcheck
+# Allow any user-id for OpenShift users.
+RUN chown -R app:app ./ && \
+  chmod -R 777 /home/app/python
+
 USER app
 
-ENV fprocess="python index.py"
+ENV fprocess="python3 index.py"
+EXPOSE 8080
 
-ENV cgi_headers="true"
-ENV mode="http"
-ENV upstream_url="http://127.0.0.1:5000"
-
-HEALTHCHECK --interval=5s CMD [ -e /tmp/.lock ] || exit 1
+HEALTHCHECK --interval=3s CMD [ -e /tmp/.lock ] || exit 1
 
 CMD ["fwatchdog"]
